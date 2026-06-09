@@ -861,18 +861,12 @@ def try_finalize_api_call(api, raw_params, source_text, tool_map, original_query
 # ═══════════════════════════════════════════════════════════════
 
 def chat():
-    from intent_router import classify_top_intent, load_intent_registry, match_intent_heuristic
+    import os
 
-    registry = load_registry()
-    intent_registry = load_intent_registry()
-    apis = registry["apis"]
-
-    tools = generate_tools(REGISTRY_PATH)
-    tool_map = {t.name: t for t in tools}
-    api_map = {a["id"]: a for a in apis}
-    api_catalog = build_api_catalog(apis)
+    from chat_session import AutomationChatSession
 
     warmup_llm()
+    session = AutomationChatSession()
 
     print("\n🤖  Automation API Assistant")
     print("═" * 42)
@@ -880,44 +874,28 @@ def chat():
     print("automation APIs. I'll handle login and parameters.")
     print("Type 'exit' to quit.\n")
 
-    history = []
-    state = "IDLE"
-    current_api = None
-    raw_params = {}
-    original_query = ""
+    def _chain_pipeline(first_result):
+        result = first_result
+        while (
+            not result.pipeline_complete
+            and not result.waiting_for_user
+            and session.state == "PIPELINE"
+        ):
+            if os.getenv("PIPELINE_DEBUG"):
+                print(f"  → pipeline step: {session.pipeline_step.value}", flush=True)
+            result = session.handle("", continue_pipeline=True)
+        return result
 
-    def say(msg):
-        print(f"\n🤖 {msg}")
-        history.append({"role": "assistant", "content": msg})
+    def _print_result(result):
+        if os.getenv("PIPELINE_DEBUG") and result.step_outputs:
+            for step_name, output in result.step_outputs.items():
+                preview = str(output)
+                if len(preview) > 120:
+                    preview = preview[:120] + "…"
+                print(f"  [{step_name}] {preview}", flush=True)
+        for msg in result.messages:
+            print(f"\n🤖 {msg}")
 
-    def reset(clear_history=False):
-        nonlocal state, current_api, raw_params, original_query
-        state = "IDLE"
-        current_api = None
-        raw_params = {}
-        original_query = ""
-        if clear_history:
-            history.clear()
-
-    def finalize_or_collect(source_text):
-        nonlocal state
-        api = api_map[current_api]
-        result = try_finalize_api_call(
-            api, raw_params, source_text, tool_map, original_query
-        )
-        if result["status"] == "collect":
-            state = "COLLECT_REQUIRED"
-            say(result["message"])
-        elif result["status"] == "success":
-            say(result["message"])
-            reset()
-            print("\n" + "─" * 42)
-            print("What else can I help you with?")
-        else:
-            say(result["message"])
-            reset()
-
-    # ── loop ──────────────────────────────────────────────
     while True:
         user_input = input("\nYou: ").strip()
         if not user_input:
@@ -927,74 +905,12 @@ def chat():
             print("\n👋 Goodbye!")
             break
 
-        history.append({"role": "user", "content": user_input})
+        result = _chain_pipeline(session.handle(user_input))
+        _print_result(result)
 
-        if user_input.lower() in ("start over", "reset", "cancel", "nevermind", "new"):
-            reset(clear_history=True)
-            say("No problem! What would you like to do? (History cleared)")
-            continue
-
-        # Mid-flow greeting/help → abandon API workflow
-        if state != "IDLE":
-            top_hit = match_intent_heuristic(user_input, intent_registry)
-            if top_hit in ("chitchat", "help"):
-                reset(clear_history=False)
-                top = classify_top_intent(
-                    user_input, intent_registry, apis, history
-                )
-                say(top["reply"])
-                continue
-
-        # ─────────────────────────────────────────────────
-        # IDLE — top intent, then API selection + param extraction
-        # ─────────────────────────────────────────────────
-        if state == "IDLE":
-            original_query = user_input
-
-            top = classify_top_intent(
-                user_input, intent_registry, apis, history
-            )
-            if top["intent"] == "chitchat":
-                say(top["reply"])
-                continue
-            if top["intent"] == "help":
-                say(top["reply"])
-                continue
-
-            intent = phase1_detect_intent(user_input, api_catalog, history, set(api_map))
-            api_id = intent.get("api_id")
-
-            if not api_id or api_id not in api_map:
-                reply = intent.get("reply")
-                if reply and reply.lower() != "null":
-                    say(reply)
-                else:
-                    reason = intent.get("reason", "Could you be more specific?")
-                    say(
-                        f"I'm not sure which action you need. {reason}\n\n"
-                        "Try describing the automation task (e.g. 'list centralized "
-                        "connection profiles of type Database')."
-                    )
-                continue
-
-            current_api = api_id
-            api = api_map[api_id]
-            raw_params = {}
-            populate_params_from_query(api, original_query, raw_params)
-            finalize_or_collect(original_query)
-            continue
-
-        # ─────────────────────────────────────────────────
-        # COLLECT_REQUIRED — only missing required params
-        # ─────────────────────────────────────────────────
-        if state == "COLLECT_REQUIRED":
-            api = api_map[current_api]
-            collect_required_from_message(user_input, api, raw_params)
-            source_text = f"{original_query}\n{user_input}".strip()
-            finalize_or_collect(source_text)
-            continue
-
-    # end while
+        if result.pipeline_complete and not result.waiting_for_user:
+            print("\n" + "─" * 42)
+            print("What else can I help you with?")
 
 
 # ── ENTRY POINT ───────────────────────────────────────────────

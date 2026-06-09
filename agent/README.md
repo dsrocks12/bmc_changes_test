@@ -13,6 +13,8 @@ agent/
 ├── intent_router.py      ← Runs before API selection
 ├── tool_generator.py     ← YAML → LangChain tools
 ├── agent.py              ← Main agent (terminal CLI)
+├── chat_session.py       ← Session + pipeline orchestration
+├── pipeline.py           ← Step-by-step pipeline (one LLM call per step)
 ├── server.py             ← HTTP API for the UI chat widget
 ├── llm_provider.py       ← TinyLlama via Hugging Face
 ├── requirements.txt
@@ -66,6 +68,10 @@ List generated tools without chat:
 # macOS:    agent/.venv/bin/python benchmark.py --tools-only
 ```
 
+### Pipeline debug
+
+Each user request runs through discrete steps (`top_intent` → `select_api` → `extract_required` → …). Set `PIPELINE_DEBUG=1` to log each step’s structured output. Set `PIPELINE_ONE_STEP=1` to run only one step per HTTP call (for testing).
+
 ---
 
 ## Adding an API
@@ -79,7 +85,7 @@ Add an entry under `apis:` in `api_registry.yaml` — a new tool is generated au
 | Component | Technology |
 |-----------|------------|
 | LLM | TinyLlama 1.1B Chat (local) |
-| Agent | 4-phase state machine in `agent.py` / `chat_session.py` |
+| Agent | Pipeline state machine (`pipeline.py` → `chat_session.py`) |
 | Tools | Auto-generated from YAML |
 | HTTP | Python `requests` + registry auth |
 | Config | YAML + `.env` |
