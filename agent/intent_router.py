@@ -1,0 +1,152 @@
+"""
+Top-level intent routing (chitchat / help / tool_call) before API selection.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+
+import yaml
+
+from agent import build_api_catalog, llm_intent, safe_json_parse
+
+BASE_DIR = Path(__file__).parent
+INTENT_REGISTRY_PATH = str(BASE_DIR / "intent_registry.yaml")
+
+VALID_TOP_INTENTS = frozenset({"chitchat", "help", "tool_call"})
+
+
+def load_intent_registry():
+    with open(INTENT_REGISTRY_PATH) as f:
+        return yaml.safe_load(f)
+
+
+def _normalize(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _intent_map(registry) -> dict[str, dict]:
+    return {i["id"]: i for i in registry.get("intents", [])}
+
+
+def match_intent_heuristic(user_input: str, registry) -> str | None:
+    """Fast path: exact / short-message match against registry triggers."""
+    norm = _normalize(user_input)
+    if not norm:
+        return None
+
+    for intent in registry.get("intents", []):
+        iid = intent.get("id")
+        if iid == "tool_call":
+            continue
+        for trigger in intent.get("triggers", []):
+            t = _normalize(trigger)
+            if not t:
+                continue
+            if norm == t or norm.startswith(t + " ") or norm.endswith(" " + t):
+                return iid
+
+    # Very short non-technical utterances → chitchat (avoid "agent" API false positives)
+    if len(norm.split()) <= 2 and not _looks_like_automation_request(norm):
+        if re.fullmatch(r"(hi+|hey+|hello+|yo+|sup|thanks?|thx|bye+)", norm.replace(" ", "")):
+            return "chitchat"
+
+    return None
+
+
+def _looks_like_automation_request(norm: str) -> bool:
+    keywords = (
+        "profile", "connection", "parameter", "server", "config",
+        "list", "get", "set", "show", "find", "search", "deploy",
+        "centralized", "database", "agent param", "control-m", "controlm",
+    )
+    return any(k in norm for k in keywords)
+
+
+def build_help_reply(apis) -> str:
+    catalog = build_api_catalog(apis)
+    return (
+        "I can run these BMC automation APIs for you:\n\n"
+        f"{catalog}\n\n"
+        "Describe what you need in plain language — for example:\n"
+        '• "List centralized connection profiles of type Database"\n'
+        '• "Get parameters for server PROD and agent AG001"\n'
+        '• "Set agent parameter X to value Y"\n\n'
+        "I'll confirm the API and parameters before calling anything."
+    )
+
+
+def _chitchat_reply(intent_def: dict, user_input: str) -> str:
+    return (intent_def.get("default_reply") or "").strip() or (
+        "Hello! Tell me what Control-M automation task you'd like to run."
+    )
+
+
+def classify_top_intent(user_input: str, registry, apis, history) -> dict:
+    """
+    Returns {"intent": "chitchat"|"help"|"tool_call", "reply": "..."}.
+    Heuristic first, then LLM for ambiguous messages.
+    """
+    imap = _intent_map(registry)
+    hit = match_intent_heuristic(user_input, registry)
+    if hit == "chitchat":
+        return {"intent": "chitchat", "reply": _chitchat_reply(imap["chitchat"], user_input)}
+    if hit == "help":
+        return {"intent": "help", "reply": build_help_reply(apis)}
+
+    norm = _normalize(user_input)
+    if _looks_like_automation_request(norm):
+        return {"intent": "tool_call", "reply": None}
+
+    # LLM fallback for ambiguous text
+    intent_lines = []
+    for intent in registry.get("intents", []):
+        intent_lines.append(f"- {intent['id']}: {intent.get('description', '').strip()}")
+
+    history_ctx = ""
+    if history:
+        recent = history[-4:]
+        history_ctx = "Recent conversation:\n" + "\n".join(
+            f"  {m['role'].upper()}: {m['content'][:200]}" for m in recent
+        ) + "\n\n"
+
+    prompt = f"""{history_ctx}Classify the user's message into exactly ONE top-level intent.
+
+Intents:
+{chr(10).join(intent_lines)}
+
+Rules:
+- chitchat: greetings, thanks, small talk ONLY — no automation task
+- help: asks what you can do / available commands
+- tool_call: wants to run a BMC automation action (list, get, set, search, configure)
+
+User said:
+<user_input>
+{user_input}
+</user_input>
+
+Respond with ONLY JSON:
+{{"intent": "chitchat"|"help"|"tool_call", "reply": "<short friendly reply if chitchat, else null>"}}"""
+
+    raw = llm_intent.invoke(prompt).content
+    data = safe_json_parse(raw) or {}
+    intent = data.get("intent")
+    if intent not in VALID_TOP_INTENTS:
+        intent = "tool_call" if _looks_like_automation_request(norm) else "chitchat"
+
+    reply = data.get("reply")
+    if intent == "chitchat":
+        if not reply or str(reply).lower() == "null":
+            reply = _chitchat_reply(imap.get("chitchat", {}), user_input)
+    elif intent == "help":
+        reply = build_help_reply(apis)
+    else:
+        reply = None
+
+    return {"intent": intent, "reply": reply}
+
+
+def is_chitchat_message(user_input: str, registry) -> bool:
+    return match_intent_heuristic(user_input, registry) == "chitchat"

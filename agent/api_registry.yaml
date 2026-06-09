@@ -1,0 +1,126 @@
+# ============================================================
+#  Automation API Registry
+#  Used by the LangChain agent to auto-generate tools
+# ============================================================
+
+base_url: "https://st-ntx-3q0qb:8443"
+
+# The target host uses a self-signed / internal cert, so TLS verification
+# is disabled for this deployment. Flip to true once a proper cert is in place.
+verify_ssl: false
+
+# ── Authentication ─────────────────────────────────────────
+# Every API with `requires_auth: true` will automatically trigger this
+# login call first. The returned token is cached in-memory for the
+# lifetime of the Python process and re-used across tool invocations.
+#
+# Credentials are loaded from `agent/.env` on startup:
+#   AUTOMATION_USER  →  username
+#   AUTOMATION_PASS  →  password
+#
+# Set AUTOMATION_USER and AUTOMATION_PASS in `agent/.env` (see `.env.example`).
+# `.env` is git-ignored so secrets never land in source control.
+auth:
+  type: bearer
+  method: POST
+  endpoint: /automation-api/session/login
+  credentials:
+    username_env: AUTOMATION_USER
+    password_env: AUTOMATION_PASS
+  token_field: token
+  header: Authorization
+  header_format: "Bearer {token}"
+
+apis:
+  - id: get_centralized_connection_profiles
+    name: Get Centralized Deployed Connection Profiles
+    description: >
+      Returns the currently centralized deployed connection profiles that match
+      a search query. Filters by profile `type` (Database, FileTransfer, Hadoop,
+      Informatica, SAP, or `*` for all) and by `name` (supports `*`, `?`, and
+      comma-separated lists). Use this when the user wants to list, look up, or
+      inspect centralized connection profiles on the automation server.
+    method: GET
+    endpoint: /automation-api/deploy/connectionprofiles/centralized
+    requires_auth: true
+    parameters:
+      - name: type
+        in: query
+        required: false
+        type: string
+        default: "*"
+        enum: ["Database", "FileTransfer", "Hadoop", "Informatica", "SAP", "*"]
+        description: >
+          The type of connection profile such as Database, FileTransfer,
+          Hadoop, Informatica, SAP. Use * to get all types.
+      - name: name
+        in: query
+        required: false
+        type: string
+        default: "*"
+        description: >
+          The name of centralized connection profile. Supports for *, ?, and
+          comma. By default is *.
+
+  - id: get_agent_parameters
+    name: Get Agent Parameters
+    description: >
+      Returns all configuration parameters for the specified agent on a server.
+      Use when the user wants to list, inspect, or audit agent parameter names
+      and values. Optional `extendedData` requests additional hidden/extended
+      fields when supported by the server.
+    method: GET
+    endpoint: /config/server/{server}/agent/{agent}/params
+    requires_auth: true
+    parameters:
+      - name: server
+        in: path
+        required: true
+        type: string
+        description: The server the agent is connected to.
+      - name: agent
+        in: path
+        required: true
+        type: string
+        description: The name of the agent to query.
+      - name: extendedData
+        in: query
+        required: false
+        type: boolean
+        default: false
+        description: >
+          When true, return extended agent parameter data (may include hidden
+          fields depending on server behavior).
+
+  - id: set_agent_parameter
+    name: Set Agent Parameter
+    description: >
+      Updates a single named parameter on the specified agent. The request body
+      must be JSON with a `value` field. Use when the user wants to change or
+      configure a specific agent parameter.
+    method: POST
+    endpoint: /config/server/{server}/agent/{agent}/param/{name}
+    requires_auth: true
+    parameters:
+      - name: server
+        in: path
+        required: true
+        type: string
+        description: The server the agent is connected to.
+      - name: agent
+        in: path
+        required: true
+        type: string
+        description: The name of the agent to update.
+      - name: name
+        in: path
+        required: true
+        type: string
+        description: The parameter name to set.
+      - name: value
+        in: body
+        required: true
+        type: string
+        description: >
+          New parameter value; serialized as JSON body `{"value": "<string>"}`
+          with Content-Type application/json.
