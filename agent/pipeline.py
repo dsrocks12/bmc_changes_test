@@ -219,6 +219,7 @@ def _step_extract_required(ctx: PipelineContext, deps: PipelineDeps) -> StepResu
     api = deps.api_map[ctx.api_id]
     req_names = _required_param_names(api)
     extracted: dict = {}
+    strict_filters = not ctx.supplemental_query.strip()
 
     if req_names:
         extracted = phase2_extract_params(
@@ -226,6 +227,7 @@ def _step_extract_required(ctx: PipelineContext, deps: PipelineDeps) -> StepResu
             api,
             ctx.raw_params,
             allowed_names=req_names,
+            apply_confidence_filters=strict_filters,
         )
         extracted = _drop_unmentioned_enums(api, extracted, ctx.source_text)
         ctx.raw_params.update(extracted)
@@ -258,6 +260,7 @@ def _step_extract_optional(ctx: PipelineContext, deps: PipelineDeps) -> StepResu
     api = deps.api_map[ctx.api_id]
     opt_names = _optional_param_names(api)
     extracted: dict = {}
+    strict_filters = not ctx.supplemental_query.strip()
 
     if opt_names:
         extracted = phase2_extract_params(
@@ -265,6 +268,7 @@ def _step_extract_optional(ctx: PipelineContext, deps: PipelineDeps) -> StepResu
             api,
             ctx.raw_params,
             allowed_names=opt_names,
+            apply_confidence_filters=strict_filters,
         )
         extracted = _drop_unmentioned_enums(api, extracted, ctx.source_text)
         ctx.raw_params.update(extracted)
@@ -284,8 +288,9 @@ def _step_extract_optional(ctx: PipelineContext, deps: PipelineDeps) -> StepResu
 def _step_convert_params(ctx: PipelineContext, deps: PipelineDeps) -> StepResult:
     api = deps.api_map[ctx.api_id]
     working = dict(ctx.raw_params)
+    strict_filters = not ctx.supplemental_query.strip()
     converted, req_miss = apply_conversion_and_reconcile(
-        api, working, ctx.source_text
+        api, working, ctx.source_text, apply_confidence_filters=strict_filters
     )
     ctx.raw_params = working
     ctx.converted_params = converted

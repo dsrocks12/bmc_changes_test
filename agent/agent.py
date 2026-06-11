@@ -297,11 +297,14 @@ def _strip_optional_params(api, params):
             params.pop(p["name"], None)
 
 
-def extract_params_heuristic(user_input, api, allowed_names=None):
+def extract_params_heuristic(
+    user_input, api, allowed_names=None, *, apply_confidence_filters=True
+):
     """
     Registry-driven extraction when the LLM returns nothing.
     Uses each parameter's name from api_registry.yaml (not hardcoded APIs).
     Values below PARAM_CONFIDENCE_THRESHOLD are dropped (topic-word guard).
+    Set apply_confidence_filters=False on follow-up after the user was asked.
     """
     from param_confidence import accept_param_value, score_param_extraction_confidence
 
@@ -336,14 +339,18 @@ def extract_params_heuristic(user_input, api, allowed_names=None):
                     val = m.group(1).strip()
                     if not val or val.lower() in (pname.lower(), "add", "the", "a", "an"):
                         continue
-                    sc = score_param_extraction_confidence(
-                        p, val, api, user_input, pattern_index=pat_idx
-                    )
-                    if sc > best_score and accept_param_value(
-                        p, val, api, user_input, pattern_index=pat_idx
-                    ):
-                        best_score = sc
+                    if apply_confidence_filters:
+                        sc = score_param_extraction_confidence(
+                            p, val, api, user_input, pattern_index=pat_idx
+                        )
+                        if sc > best_score and accept_param_value(
+                            p, val, api, user_input, pattern_index=pat_idx
+                        ):
+                            best_score = sc
+                            best_val = val
+                    else:
                         best_val = val
+                        break
                 if best_val is None:
                     continue
                 val = best_val
@@ -354,7 +361,7 @@ def extract_params_heuristic(user_input, api, allowed_names=None):
                 val = m.group(1).strip()
                 if not val or val.lower() in (pname.lower(), "add", "the", "a", "an"):
                     continue
-                if not accept_param_value(
+                if apply_confidence_filters and not accept_param_value(
                     p, val, api, user_input, pattern_index=pat_idx
                 ):
                     continue
@@ -371,11 +378,22 @@ def extract_params_heuristic(user_input, api, allowed_names=None):
     return out
 
 
-def phase2_extract_params(user_input, api, already, allowed_names=None, phase=None):
+def phase2_extract_params(
+    user_input,
+    api,
+    already,
+    allowed_names=None,
+    phase=None,
+    *,
+    apply_confidence_filters=True,
+):
     """
     Extract parameters from natural language. If allowed_names is set, only
     those registry parameters may appear in the output — used so the first
     message after API confirm never pre-fills optional filters from intent text.
+
+    apply_confidence_filters: True on the first pass; False after the user was
+    asked for missing params (accept their answer as-is).
     """
     params = api.get("parameters", [])
     if allowed_names is not None:
@@ -416,6 +434,12 @@ may include several of their recent lines (newest at the bottom). Pull any
 parameter values they clearly stated in any of those lines, not only the last
 sentence, if they refer back to a name/email/etc. they gave earlier."""
 
+    collect_ctx = ""
+    if not apply_confidence_filters:
+        collect_ctx = """
+Context: The assistant already asked the user for missing parameters. Extract
+every value they supply for the allowed parameters — treat their answer literally."""
+
     prompt = f"""Extract parameter values for this API call. You only have the
 parameter definitions below (from the API registry) — use each parameter's
 description to decide what KIND of value is allowed. Do not assume extra
@@ -438,6 +462,7 @@ User said:
 {scope}
 {optional_ctx}
 {confirm_ctx}
+{collect_ctx}
 
 Rules:
 - A parameter gets a value only if the user clearly supplied a concrete value
@@ -463,12 +488,20 @@ Rules:
 - Return {{}} if nothing new was found."""
 
     parsed = _sanitize_params_dict(
-        api, safe_json_parse(llm.invoke(prompt).content) or {}, user_input
+        api,
+        safe_json_parse(llm.invoke(prompt).content) or {},
+        user_input,
+        apply_confidence_filters=apply_confidence_filters,
     )
-    for key, val in extract_params_heuristic(user_input, api, allowed_names).items():
+    for key, val in extract_params_heuristic(
+        user_input, api, allowed_names, apply_confidence_filters=apply_confidence_filters
+    ).items():
         parsed[key] = val
     return _validate_and_filter_enums(
-        api, _sanitize_params_dict(api, parsed, user_input)
+        api,
+        _sanitize_params_dict(
+            api, parsed, user_input, apply_confidence_filters=apply_confidence_filters
+        ),
     )
 
 
@@ -528,7 +561,14 @@ def _param_map(api):
     return {p["name"]: p for p in api.get("parameters", [])}
 
 
-def _is_plausible_param_value(param_def, value, source_text=None, api=None):
+def _is_plausible_param_value(
+    param_def,
+    value,
+    source_text=None,
+    api=None,
+    *,
+    apply_confidence_filters=True,
+):
     """Reject topic vocabulary / low-confidence extractions (registry-driven)."""
     from param_confidence import accept_param_value
 
@@ -544,6 +584,9 @@ def _is_plausible_param_value(param_def, value, source_text=None, api=None):
     if low in _SCHEMA_TYPES or low in _META_WORDS:
         return False
 
+    if not apply_confidence_filters:
+        return True
+
     if param_def.get("enum"):
         if not any(str(a).lower() == low for a in param_def["enum"]):
             return False
@@ -558,7 +601,9 @@ def _is_plausible_param_value(param_def, value, source_text=None, api=None):
     return False
 
 
-def _sanitize_params_dict(api, params, source_text=None):
+def _sanitize_params_dict(
+    api, params, source_text=None, *, apply_confidence_filters=True
+):
     """Keep only values that pass registry-driven confidence scoring."""
     pmap = _param_map(api)
     cleaned = {}
@@ -566,7 +611,13 @@ def _sanitize_params_dict(api, params, source_text=None):
         p = pmap.get(name)
         if not p:
             continue
-        if not _is_plausible_param_value(p, value, source_text, api=api):
+        if not _is_plausible_param_value(
+            p,
+            value,
+            source_text,
+            api=api,
+            apply_confidence_filters=apply_confidence_filters,
+        ):
             continue
         if p.get("enum"):
             match = next(
@@ -726,28 +777,39 @@ Rules:
     return parsed
 
 
-def apply_conversion_and_reconcile(api, raw_params, source_text=None):
+def apply_conversion_and_reconcile(
+    api, raw_params, source_text=None, *, apply_confidence_filters=True
+):
     """
     Run Phase 3 conversion, merge description-driven fallbacks, then drop only
     optional raw keys the pipeline did not convert. Never discard required
     parameters the LLM forgot — that caused infinite 'still need date' loops.
     """
-    raw_clean = _sanitize_params_dict(api, raw_params, source_text)
+    raw_clean = _sanitize_params_dict(
+        api, raw_params, source_text, apply_confidence_filters=apply_confidence_filters
+    )
     raw_params.clear()
     raw_params.update(raw_clean)
 
     llm_part = {}
     if raw_clean:
         llm_part = _sanitize_params_dict(
-            api, phase3_convert_params(api, raw_clean), source_text
+            api,
+            phase3_convert_params(api, raw_clean),
+            source_text,
+            apply_confidence_filters=apply_confidence_filters,
         )
 
     converted = merge_coercion_fallback(api, raw_clean, llm_part)
     for name, raw_val in raw_clean.items():
         p = _param_map(api).get(name)
         llm_val = converted.get(name)
-        if p and _is_plausible_param_value(p, raw_val, source_text):
-            if not _is_plausible_param_value(p, llm_val, source_text):
+        if p and _is_plausible_param_value(
+            p, raw_val, source_text, apply_confidence_filters=apply_confidence_filters
+        ):
+            if not _is_plausible_param_value(
+                p, llm_val, source_text, apply_confidence_filters=apply_confidence_filters
+            ):
                 converted[name] = raw_val
     converted = merge_passthrough_from_raw(api, raw_clean, converted)
     optional_names = _optional_param_names(api)
@@ -852,7 +914,11 @@ def collect_required_from_message(user_input, api, raw_params):
     if not req_names:
         return
     extracted = phase2_extract_params(
-        user_input, api, raw_params, allowed_names=req_names
+        user_input,
+        api,
+        raw_params,
+        allowed_names=req_names,
+        apply_confidence_filters=False,
     )
     extracted = _drop_unmentioned_enums(api, extracted, user_input)
     raw_params.update(extracted)

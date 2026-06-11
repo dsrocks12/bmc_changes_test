@@ -185,6 +185,7 @@ class AutomationChatSession:
                 api,
                 self.pipeline_ctx.raw_params,
                 allowed_names=req_names,
+                apply_confidence_filters=False,
             )
             extracted = _drop_unmentioned_enums(
                 api, extracted, self.pipeline_ctx.source_text

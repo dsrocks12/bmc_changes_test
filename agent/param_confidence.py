@@ -255,11 +255,13 @@ def score_param_extraction_confidence(
         if name_echo:
             score -= 0.55
 
-    if low in vocab and not enum_match:
+    # Skip topic/sibling penalties when user clearly assigned this param
+    # (e.g. set_agent_parameter: "name is value" — parameter name is literally "value").
+    if low in vocab and not enum_match and not explicit:
         score -= 0.55
 
     sibling_names = {p["name"].lower() for p in api.get("parameters", [])}
-    if low in sibling_names and low != pname.lower():
+    if low in sibling_names and low != pname.lower() and not explicit:
         score -= 0.4
 
     if low not in text:
