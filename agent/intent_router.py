@@ -76,22 +76,45 @@ def _registry_matches_api(user_input: str, apis: list) -> bool:
     return match_api_heuristic(user_input, apis) is not None
 
 
+def build_api_name_list(apis) -> list[str]:
+    """Display names from api_registry.yaml (falls back to id)."""
+    names: list[str] = []
+    for api in apis or []:
+        label = (api.get("name") or api.get("id") or "").strip()
+        if label:
+            names.append(label)
+    return names
+
+
+def build_chitchat_reply(apis) -> str:
+    """Greeting built from registry API names only (plain ASCII)."""
+    names = build_api_name_list(apis)
+    if not names:
+        return (
+            "Hello! I am your Control-M automation assistant. "
+            "Tell me what automation task you would like to run."
+        )
+    lines = [
+        "Hello! I am your Control-M automation assistant. "
+        "I can run registered BMC APIs for you:",
+        "",
+        *([f"- {name}" for name in names]),
+        "",
+        "What would you like to do?",
+    ]
+    return "\n".join(lines)
+
+
 def build_help_reply(apis) -> str:
     catalog = build_api_catalog(apis)
     return (
         "I can run these BMC automation APIs for you:\n\n"
         f"{catalog}\n\n"
-        "Describe what you need in plain language — for example:\n"
-        '• "List centralized connection profiles of type Database"\n'
-        '• "Get parameters for server PROD and agent AG001"\n'
-        '• "Set agent parameter X to value Y"\n\n'
-        "I'll confirm the API and parameters before calling anything."
-    )
-
-
-def _chitchat_reply(intent_def: dict, user_input: str) -> str:
-    return (intent_def.get("default_reply") or "").strip() or (
-        "Hello! Tell me what Control-M automation task you'd like to run."
+        "Describe what you need in plain language. For example:\n"
+        '- "List centralized connection profiles of type Database"\n'
+        '- "Get parameters for server PROD and agent AG001"\n'
+        '- "Set agent parameter X to value Y"\n\n'
+        "I will confirm the API and parameters before calling anything."
     )
 
 
@@ -103,7 +126,7 @@ def classify_top_intent(user_input: str, registry, apis, history) -> dict:
     imap = _intent_map(registry)
     hit = match_intent_heuristic(user_input, registry)
     if hit == "chitchat":
-        return {"intent": "chitchat", "reply": _chitchat_reply(imap["chitchat"], user_input)}
+        return {"intent": "chitchat", "reply": build_chitchat_reply(apis)}
     if hit == "help":
         return {"intent": "help", "reply": build_help_reply(apis)}
 
@@ -156,8 +179,7 @@ Respond with ONLY JSON:
 
     reply = data.get("reply")
     if intent == "chitchat":
-        if not reply or str(reply).lower() == "null":
-            reply = _chitchat_reply(imap.get("chitchat", {}), user_input)
+        reply = build_chitchat_reply(apis)
     elif intent == "help":
         reply = build_help_reply(apis)
     else:

@@ -30,10 +30,7 @@ intents:
       - bye
       - goodbye
       - see you
-    default_reply: >
-      Hello! I'm your Control-M automation assistant. I can run registered
-      BMC APIs for you — for example, list connection profiles or inspect
-      agent parameters. What would you like to do?
+    # Greeting text is generated at runtime from api_registry.yaml (see build_chitchat_reply).
 
   - id: help
     name: Help / capabilities
