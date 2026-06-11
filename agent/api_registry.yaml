@@ -160,3 +160,24 @@ apis:
         type: string
         enum: ["Up", "Down", "Recycle", "Ignore"]
         description: The desired state to set the server to (Up, Down, Recycle, Ignore).
+
+  - id: analyze_agent_communication
+    name: Analyze Agent Communication
+    description: >
+      Analyzes the communication between a specific Control-M Server and an Agent.
+      Use this when the user wants to check, test, or analyze the connection/communication
+      status between a server and an agent.
+    method: GET
+    endpoint: /automation-api/config/server/{server}/agent/{agent}/analysis
+    requires_auth: true
+    parameters:
+      - name: server
+        in: path
+        required: true
+        type: string
+        description: The name of the Control-M server to which the Agent is connected.
+      - name: agent
+        in: path
+        required: true
+        type: string
+        description: The name of the Agent to analyze communication with.
