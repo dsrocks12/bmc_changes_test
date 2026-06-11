@@ -313,10 +313,12 @@ def extract_params_heuristic(
     if not user_input or not user_input.strip():
         return {}
 
-    out = {}
+    out = _extract_server_agent_pair(user_input, allowed_names)
     for p in api.get("parameters", []):
         pname = p["name"]
         if allowed_names is not None and pname not in allowed_names:
+            continue
+        if pname in out:
             continue
 
         patterns = [
@@ -331,13 +333,16 @@ def extract_params_heuristic(
         ]
         for pat_idx, pat in enumerate(patterns):
             if pat_idx >= _explicit_pattern_count:
+                if not apply_confidence_filters:
+                    # Follow-up: only explicit assignment patterns, not bare "param word".
+                    continue
                 # Bare "param word" — try all spans, keep highest-confidence match.
                 best_val = None
                 best_score = -1.0
 
                 for m in re.finditer(pat, user_input, re.IGNORECASE):
                     val = m.group(1).strip()
-                    if not val or val.lower() in (pname.lower(), "add", "the", "a", "an"):
+                    if _is_junk_extraction_value(val, pname, strict=True):
                         continue
                     if apply_confidence_filters:
                         sc = score_param_extraction_confidence(
@@ -359,7 +364,7 @@ def extract_params_heuristic(
                 if not m:
                     continue
                 val = m.group(1).strip()
-                if not val or val.lower() in (pname.lower(), "add", "the", "a", "an"):
+                if _is_junk_extraction_value(val, pname, strict=apply_confidence_filters):
                     continue
                 if apply_confidence_filters and not accept_param_value(
                     p, val, api, user_input, pattern_index=pat_idx
@@ -555,6 +560,47 @@ def format_optional_offer(api, opt_missing, had_required):
 
 _SCHEMA_TYPES = frozenset({"string", "number", "boolean", "integer", "array", "object"})
 _META_WORDS = frozenset({"optional", "required", "default", "null", "none", "true", "false"})
+# Grammar words rejected only on the first pass (confidence filters on).
+_GRAMMAR_STOPWORDS = frozenset({
+    "and", "or", "the", "is", "to", "for", "with", "a", "an", "as", "on", "at",
+    "by", "of", "in", "it", "be", "are", "was", "were", "not", "but", "if",
+})
+
+
+def _is_junk_extraction_value(val: str, pname: str, *, strict: bool = True) -> bool:
+    if not val or not str(val).strip():
+        return True
+    sval = str(val).strip()
+    low = sval.lower()
+    if low == pname.lower() or low in ("add", "the"):
+        return True
+    if strict and low in _GRAMMAR_STOPWORDS:
+        if re.search(r"[A-Z]", sval) or re.search(r"\d", sval) or "_" in sval or "-" in sval:
+            return False
+        return True
+    return False
+
+
+def _extract_server_agent_pair(user_input: str, allowed_names) -> dict:
+    """Parse '{host} server and agent is {agent}' style answers."""
+    if allowed_names is not None and not {"server", "agent"} & set(allowed_names):
+        return {}
+    m = re.search(
+        r"(\S+)\s+server\s+and\s+agent\s+(?:is\s+)?(\S+)",
+        user_input,
+        re.IGNORECASE,
+    )
+    if not m:
+        return {}
+    host, ag = m.group(1).strip(), m.group(2).strip()
+    if not host or not ag:
+        return {}
+    out = {}
+    if allowed_names is None or "server" in allowed_names:
+        out["server"] = host
+    if allowed_names is None or "agent" in allowed_names:
+        out["agent"] = ag
+    return out
 
 
 def _param_map(api):
