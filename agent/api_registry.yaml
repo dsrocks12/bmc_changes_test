@@ -3,7 +3,7 @@
 #  Used by the LangChain agent to auto-generate tools
 # ============================================================
 
-base_url: "https://st-ntx-3q0qb:8443"
+base_url: "https://nlp-dbactm-sp17:8443"
 
 # The target host uses a self-signed / internal cert, so TLS verification
 # is disabled for this deployment. Flip to true once a proper cert is in place.
@@ -124,3 +124,18 @@ apis:
         description: >
           New parameter value; serialized as JSON body `{"value": "<string>"}`
           with Content-Type application/json.
+
+  - id: get_server_agentless_hosts
+    name: Get Server Agentless Hosts
+    description: >
+      Returns all the agentless hosts of a specified Control-M Server. Use this when the user
+      wants to list, view, or get agentless hosts connected to a specific Control-M server.
+    method: GET
+    endpoint: /automation-api/config/server/{server}/agentlesshosts
+    requires_auth: true
+    parameters:
+      - name: server
+        in: path
+        required: true
+        type: string
+        description: The name of the Control-M server to query for agentless hosts.
