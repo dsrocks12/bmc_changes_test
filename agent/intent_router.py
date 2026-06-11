@@ -61,8 +61,19 @@ def _looks_like_automation_request(norm: str) -> bool:
         "profile", "connection", "parameter", "server", "config",
         "list", "get", "set", "show", "find", "search", "deploy",
         "centralized", "database", "agent param", "control-m", "controlm",
+        "analyze", "analysis", "communication", "agentless", "desired",
+        "state", "recycle", "host", "check", "test", "inspect", "audit",
     )
     return any(k in norm for k in keywords)
+
+
+def _registry_matches_api(user_input: str, apis: list) -> bool:
+    """True when api_registry keyword routing would pick an API (any registry size)."""
+    if not user_input or not apis:
+        return False
+    from api_router import match_api_heuristic
+
+    return match_api_heuristic(user_input, apis) is not None
 
 
 def build_help_reply(apis) -> str:
@@ -97,6 +108,8 @@ def classify_top_intent(user_input: str, registry, apis, history) -> dict:
         return {"intent": "help", "reply": build_help_reply(apis)}
 
     norm = _normalize(user_input)
+    if _registry_matches_api(user_input, apis):
+        return {"intent": "tool_call", "reply": None}
     if _looks_like_automation_request(norm):
         return {"intent": "tool_call", "reply": None}
 
@@ -134,7 +147,12 @@ Respond with ONLY JSON:
     data = safe_json_parse(raw) or {}
     intent = data.get("intent")
     if intent not in VALID_TOP_INTENTS:
-        intent = "tool_call" if _looks_like_automation_request(norm) else "chitchat"
+        intent = (
+            "tool_call"
+            if _registry_matches_api(user_input, apis)
+            or _looks_like_automation_request(norm)
+            else "chitchat"
+        )
 
     reply = data.get("reply")
     if intent == "chitchat":
